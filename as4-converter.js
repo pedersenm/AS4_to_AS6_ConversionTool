@@ -1477,6 +1477,7 @@ class AS4Converter {
                 ['Removing SafetyRelease attributes...', () => { this.autoRemoveSafetyRelease(); this.autoRemoveSafetyRelease(); }],
                 ['Updating VC firmware version...', () => this.autoUpdateVcFirmwareVersion()],
                 ['Fixing OpcUa_any devices...', () => this.autoApplyOpcUaAnyChannelBrowsePath()],
+                ['Upgrading OPC UA Information Model...', () => this.autoApplyOpcUaInformationModelUpgrade()],
                 ['Removing MpWebXs package...', () => this.autoRemoveMpWebXs()],
                 ['Removing user passwords...', () => this.autoApplyUserPasswordRemoval()],
                 ['Adding BR_Engineer roles...', () => this.autoApplyUserBREngineerRole()],
@@ -6456,6 +6457,93 @@ ${groups.join('\n')}
     }
 
     /**
+     * Upgrade OPC UA Information Model from 1.0 to 2.0 in .hw files
+     * AS6 requires OPC UA Information Model 2.0. AS4 projects using Information Model 1.0
+     * have <Parameter ID="OpcUaInformationModels_PV_Version" Value="1" /> in the CPU module.
+     * Upgrading bumps this to Value="2" and adds the new v2.0 facet/type parameters
+     * (OpcUaInformationModel_Facet, OpcUaInformationModel_TypeInformation,
+     * OpcUaInformationModel_BaseObjectTypeForStructures) which default to "0".
+     */
+    autoApplyOpcUaInformationModelUpgrade() {
+        console.log('Upgrading OPC UA Information Model from 1.0 to 2.0 in .hw files...');
+
+        let modifiedFiles = 0;
+
+        this.projectFiles.forEach((file, filePath) => {
+            if (file.isBinary) return;
+
+            const ext = filePath.toLowerCase().split('.').pop();
+            if (ext !== 'hw') return;
+
+            let content = file.content;
+            let originalContent = content;
+            let upgradedModules = 0;
+
+            // Find Module blocks that configure the OPC UA Information Model
+            const modulePattern = /<Module\s+[^>]*>[\s\S]*?<\/Module>/gi;
+
+            content = content.replace(modulePattern, (moduleMatch) => {
+                // Only touch modules currently using Information Model v1.0
+                const pvVersionPattern = /<Parameter\s+ID="OpcUaInformationModels_PV_Version"\s+Value="1"\s*\/>/i;
+                if (!pvVersionPattern.test(moduleMatch)) {
+                    return moduleMatch;
+                }
+
+                let moduleContent = moduleMatch;
+
+                // Bump the Information Model version from 1 (v1.0) to 2 (v2.0)
+                moduleContent = moduleContent.replace(
+                    /(<Parameter\s+ID="OpcUaInformationModels_PV_Version"\s+Value=")1("\s*\/>)/i,
+                    '$12$2'
+                );
+
+                // AS6 Information Model v2.0 introduces additional facet/type parameters.
+                // Add them (with their default values) right after the PV_Version parameter if missing.
+                const additionalParams = [
+                    { id: 'OpcUaInformationModel_Facet', value: '0' },
+                    { id: 'OpcUaInformationModel_TypeInformation', value: '0' },
+                    { id: 'OpcUaInformationModel_BaseObjectTypeForStructures', value: '0' }
+                ];
+
+                const missingParams = additionalParams.filter(p =>
+                    !new RegExp(`<Parameter\\s+ID="${p.id}"\\s+Value="[^"]*"\\s*/>`, 'i').test(moduleContent)
+                );
+
+                if (missingParams.length > 0) {
+                    const insertion = missingParams.map(p => `\n    <Parameter ID="${p.id}" Value="${p.value}" />`).join('');
+                    moduleContent = moduleContent.replace(
+                        /(<Parameter\s+ID="OpcUaInformationModels_PV_Version"\s+Value="2"\s*\/>)/i,
+                        `$1${insertion}`
+                    );
+                }
+
+                upgradedModules++;
+                console.log(`  Upgraded OPC UA Information Model to v2.0 in ${filePath}`);
+                return moduleContent;
+            });
+
+            if (content !== originalContent) {
+                file.content = content;
+                modifiedFiles++;
+
+                this.analysisResults.push({
+                    type: 'opcua_information_model',
+                    severity: 'info',
+                    category: 'configuration',
+                    name: 'OPC UA Information Model upgraded to 2.0',
+                    description: 'Upgraded OPC UA Information Model from version 1.0 to version 2.0',
+                    file: filePath,
+                    autoFixed: true,
+                    notes: 'AS6 requires OPC UA Information Model 2.0. Updated OpcUaInformationModels_PV_Version from 1 to 2 and added the new OpcUaInformationModel_Facet, OpcUaInformationModel_TypeInformation and OpcUaInformationModel_BaseObjectTypeForStructures parameters (default value "0").',
+                    details: [`Upgraded ${upgradedModules} module(s) in this file`]
+                });
+            }
+        });
+
+        console.log(`OPC UA Information Model upgrade complete: ${modifiedFiles} file(s) modified`);
+    }
+
+    /**
      * Visual Components firmware version must be updated for AS6
      * Changes <Vc FirmwareVersion="V4.xx.x" /> to <Vc FirmwareVersion="6.0.0" />
      */
@@ -8022,7 +8110,9 @@ ${groups.join('\n')}
             localization: '🌐',
             compiler: '🛠️',
             runtime: '▶️',
-            visualization: '🖥️'
+            visualization: '🖥️',
+            opcua_config: '🔗',
+            opcua_information_model: '🔗'
         };
         return icons[type] || '📄';
     }
@@ -8050,7 +8140,9 @@ ${groups.join('\n')}
             runtime: 'Automation Runtime',
             visualization: 'Visualization (VC3/VC4)',
             safety_config: 'Safety Configuration',
-            vc_firmware: 'Visual Components'
+            vc_firmware: 'Visual Components',
+            opcua_config: 'OPC UA Configuration',
+            opcua_information_model: 'OPC UA Information Model'
         };
         return names[type] || type;
     }
